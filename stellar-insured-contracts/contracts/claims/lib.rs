@@ -1,13 +1,19 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, contracterror, Address, Env, Symbol};
+use soroban_sdk::{contract, contractimpl, contracterror, Address, Env, Symbol, symbol_short};
+
+// Import the Policy contract interface to verify ownership and coverage
+mod policy_contract {
+    soroban_sdk::contractimport!(file = "../../target/wasm32-unknown-unknown/release/policy_contract.wasm");
+}
 
 #[contract]
 pub struct ClaimsContract;
 
-const ADMIN: Symbol = Symbol::short("ADMIN");
-const PAUSED: Symbol = Symbol::short("PAUSED");
-const CONFIG: Symbol = Symbol::short("CONFIG");
-const CLAIM: Symbol = Symbol::short("CLAIM");
+const ADMIN: Symbol = symbol_short!("ADMIN");
+const PAUSED: Symbol = symbol_short!("PAUSED");
+const CONFIG: Symbol = symbol_short!("CONFIG");
+const CLAIM: Symbol = symbol_short!("CLAIM");
+const POLICY_CLAIM: Symbol = symbol_short!("P_CLAIM");
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
@@ -57,25 +63,53 @@ impl ClaimsContract {
         Ok(())
     }
 
-    pub fn submit_claim(env: Env, policy_id: u64, amount: i128) -> Result<u64, ContractError> {
+    pub fn submit_claim(env: Env, claimant: Address, policy_id: u64, amount: i128) -> Result<u64, ContractError> {
+        // 1. IDENTITY CHECK
+        claimant.require_auth();
+
         if is_paused(&env) {
             return Err(ContractError::Paused);
         }
 
-        if amount <= 0 || amount > 500000i128 {
+        // 2. FETCH POLICY DATA
+        let (policy_contract_addr, _): (Address, Address) = env.storage()
+            .persistent()
+            .get(&CONFIG)
+            .ok_or(ContractError::NotInitialized)?;
+
+        let policy_client = policy_contract::Client::new(&env, &policy_contract_addr);
+        let policy = policy_client.get_policy(&policy_id);
+
+        // 3. OWNERSHIP CHECK (Verify policyholder identity)
+        if policy.0 != claimant {
+            return Err(ContractError::Unauthorized); 
+        }
+
+        // 4. DUPLICATE CHECK (Check if this specific policy already has a claim)
+        if env.storage().persistent().has(&(POLICY_CLAIM, policy_id)) {
+            return Err(ContractError::AlreadyExists);
+        }
+
+        // 5. COVERAGE CHECK (Enforce claim ≤ coverage)
+        if amount <= 0 || amount > policy.1 {
             return Err(ContractError::InvalidInput);
         }
 
-        let claimant = env.current_contract_address();
-        let claim_id: u64 = env.ledger().sequence().into();
+        // ID Generation
+        let seq: u64 = env.ledger().sequence().into();
+        let claim_id = seq + 1; 
         let current_time = env.ledger().timestamp();
 
         env.storage()
             .persistent()
             .set(&(CLAIM, claim_id), &(policy_id, claimant.clone(), amount, 0u32, current_time));
+        
+        env.storage()
+            .persistent()
+            .set(&(POLICY_CLAIM, policy_id), &claim_id);
 
         env.events().publish(
-            (Symbol::new(&env, "claim_submitted"), claim_id),
+            (symbol_short!("clm_sub"), claim_id),
             (policy_id, amount, claimant.clone()),
         );
 
@@ -99,10 +133,7 @@ impl ClaimsContract {
             .get(&ADMIN)
             .ok_or(ContractError::NotInitialized)?;
 
-        let caller = env.current_contract_address();
-        if caller != admin {
-            return Err(ContractError::Unauthorized);
-        }
+        admin.require_auth();
 
         let mut claim: (u64, Address, i128, u32, u64) = env
             .storage()
@@ -121,7 +152,7 @@ impl ClaimsContract {
             .set(&(CLAIM, claim_id), &claim);
 
         env.events().publish(
-            (Symbol::new(&env, "claim_approved"), claim_id),
+            (symbol_short!("clm_app"), claim_id),
             (claim.1, claim.2),
         );
 
@@ -135,11 +166,7 @@ impl ClaimsContract {
             .get(&ADMIN)
             .ok_or(ContractError::NotInitialized)?;
 
-        let caller = env.current_contract_address();
-        if caller != admin {
-            return Err(ContractError::Unauthorized);
-        }
-
+        admin.require_auth();
         set_paused(&env, true);
         Ok(())
     }
@@ -151,12 +178,9 @@ impl ClaimsContract {
             .get(&ADMIN)
             .ok_or(ContractError::NotInitialized)?;
 
-        let caller = env.current_contract_address();
-        if caller != admin {
-            return Err(ContractError::Unauthorized);
-        }
-
+        admin.require_auth();
         set_paused(&env, false);
         Ok(())
     }
 }
+mod test;
