@@ -7,7 +7,7 @@ edition = "2021"
 crate-type = ["rlib"]
 
 [dependencies]
-soroban-sdk = { version = "20", features = ["contract"] }
+soroban-sdk = { workspace = true }
 
 [profile.release]
 opt-level = "z"
