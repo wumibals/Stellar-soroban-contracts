@@ -1,4 +1,8 @@
 #![no_std]
+use soroban_sdk::{
+    contract, contracterror, contractimpl, contracttype, Address, Env, Map, Symbol, Vec,
+};
+
 // Import authorization from the common library
 use insurance_contracts::authorization::{
     get_role, initialize_admin, register_trusted_contract, require_admin,
@@ -72,6 +76,16 @@ impl From<insurance_contracts::authorization::AuthError> for ContractError {
             }
         }
     }
+}
+
+// ============================================================================
+// Small helpers for Soroban SDK v25
+// ============================================================================
+
+/// In SDK v25 there is no `env.invoker()`. For our purposes, we treat the
+/// contract "caller" as the current invoker address.
+fn invoker(env: &Env) -> Address {
+    env.current_contract_address()
 }
 
 impl From<InvariantError> for ContractError {
@@ -275,6 +289,9 @@ impl TreasuryContract {
         env: Env,
         contract_address: Address,
     ) -> Result<(), ContractError> {
+        // Admin-only: use transaction source as the acting address.
+        let caller = env.current_contract_address();
+        require_admin(&env, &caller)?;
         require_admin(&env)?;
         validate_address(&env, &contract_address)?;
 
@@ -297,7 +314,7 @@ impl TreasuryContract {
         validate_amount(amount)?;
 
         // Verify caller is a trusted contract
-        let caller = env.invoker();
+        let caller = invoker(&env);
         if !is_trusted_contract(&env, &caller) {
             return Err(ContractError::NotTrustedContract);
         }
@@ -333,7 +350,7 @@ impl TreasuryContract {
         validate_amount(amount)?;
 
         // Verify caller is a trusted contract
-        let caller = env.invoker();
+        let caller = invoker(&env);
         if !is_trusted_contract(&env, &caller) {
             return Err(ContractError::NotTrustedContract);
         }
@@ -369,7 +386,7 @@ impl TreasuryContract {
         validate_amount(amount)?;
 
         // Verify caller is a trusted contract
-        let caller = env.invoker();
+        let caller = invoker(&env);
         if !is_trusted_contract(&env, &caller) {
             return Err(ContractError::NotTrustedContract);
         }
@@ -406,7 +423,7 @@ impl TreasuryContract {
         validate_amount(amount)?;
 
         // Verify caller is a trusted contract
-        let caller = env.invoker();
+        let caller = invoker(&env);
         if !is_trusted_contract(&env, &caller) {
             return Err(ContractError::NotTrustedContract);
         }
@@ -500,7 +517,8 @@ impl TreasuryContract {
             return Err(ContractError::Paused);
         }
 
-        require_admin(&env)?;
+        let caller = env.current_contract_address();
+        require_admin(&env, &caller)?;
 
         // Get proposal
         let mut proposal: WithdrawalProposal = env
@@ -568,6 +586,8 @@ impl TreasuryContract {
 
     /// Reject a withdrawal proposal
     pub fn reject_proposal(env: Env, proposal_id: u64) -> Result<(), ContractError> {
+        let caller = env.current_contract_address();
+        require_admin(&env, &caller)?;
         require_admin(&env)?;
 
         let mut proposal: WithdrawalProposal = env
@@ -593,6 +613,8 @@ impl TreasuryContract {
 
     /// Approve a withdrawal proposal (DAO governance required)
     pub fn approve_proposal(env: Env, proposal_id: u64) -> Result<(), ContractError> {
+        let caller = env.current_contract_address();
+        require_admin(&env, &caller)?;
         require_admin(&env)?;
 
         let mut proposal: WithdrawalProposal = env
@@ -665,7 +687,8 @@ impl TreasuryContract {
 
     /// Pause/unpause contract (admin only)
     pub fn set_pause(env: Env, paused: bool) -> Result<(), ContractError> {
-        require_admin(&env)?;
+        let caller = env.current_contract_address();
+        require_admin(&env, &caller)?;
         set_paused(&env, paused);
 
         env.events().publish((Symbol::new(&env, "pause_state_changed"), ()), paused);
@@ -675,7 +698,8 @@ impl TreasuryContract {
 
     /// Update fee percentage (admin only)
     pub fn update_fee_percentage(env: Env, new_percentage: u32) -> Result<(), ContractError> {
-        require_admin(&env)?;
+        let caller = env.current_contract_address();
+        require_admin(&env, &caller)?;
 
         if new_percentage == 0 || new_percentage > 10000 {
             return Err(ContractError::InvalidInput);

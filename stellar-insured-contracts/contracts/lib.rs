@@ -4,8 +4,6 @@
 //! This module contains common types, utilities, and error handling
 //! used across all insurance contracts in the Stellar Insured ecosystem.
 
-#![no_std]
-
 use soroban_sdk::{contracttype, Address, Env, Symbol, String, BytesN};
 
 /// Re-export authorization module for easy access
@@ -112,6 +110,10 @@ pub mod errors {
         RoleNotFound = 12,
         /// Contract not trusted for cross-contract calls
         NotTrustedContract = 13,
+
+        /// 🔐 Evidence-specific errors
+        EvidenceAlreadyExists = 20,
+        EvidenceNotFound = 21,
         /// Evidence already exists for this claim
         EvidenceAlreadyExists = 20,
         /// Evidence not found
