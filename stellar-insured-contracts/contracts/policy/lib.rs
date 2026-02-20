@@ -1,10 +1,9 @@
 #![no_std]
 use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, Env, Symbol, Vec};
-use soroban_sdk::{contract, contractimpl, contracterror, contracttype, Address, Env, Symbol, Vec};
 
 // Import authorization from the common library
 use insurance_contracts::authorization::{
-    get_role, initialize_admin, register_trusted_contract, require_admin,
+    get_role, has_role, initialize_admin, register_trusted_contract, require_admin,
     require_policy_management, Role,
 };
 use insurance_contracts::rate_limit::{self, RateLimitConfig};
@@ -80,6 +79,8 @@ pub struct PolicyView {
     pub state: PolicyState,
     /// Timestamp when policy was created
     pub created_at: u64,
+    /// Whether the policy is set to auto-renew
+    pub auto_renew: bool,
 }
 
 /// Result of a paginated policies query.
@@ -137,6 +138,7 @@ pub struct Policy {
     pub end_time: u64,
     state: PolicyState, // Private - controlled through methods
     pub created_at: u64,
+    pub auto_renew: bool,
 }
 
 // Step 4: Implement Policy Methods
@@ -149,6 +151,7 @@ impl Policy {
         start_time: u64,
         end_time: u64,
         created_at: u64,
+        auto_renew: bool,
     ) -> Self {
         Policy {
             holder,
@@ -158,6 +161,7 @@ impl Policy {
             end_time,
             state: PolicyState::ACTIVE,
             created_at,
+            auto_renew,
         }
     }
 
@@ -318,22 +322,6 @@ impl PolicyStateMachine {
     }
 }
 
-// Step 5: Define Domain Errors
-#[contracterror]
-#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
-pub enum PolicyError {
-    /// Invalid state transition attempted
-    InvalidStateTransition = 1,
-    /// Access denied for the requested operation
-    AccessDenied = 2,
-    /// Policy not found
-    NotFound = 3,
-    /// Invalid input parameters
-    InvalidInput = 4,
-    /// Policy is in an invalid state for the requested operation
-    InvalidState = 5,
-}
-
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 pub enum ContractError {
@@ -426,24 +414,6 @@ fn next_policy_id(env: &Env) -> u64 {
     next_id
 }
 
-/// I2: Validate policy state transition
-/// Maps valid state transitions for policy lifecycle:
-/// Active -> Expired (time-based), Cancelled, or Claimed
-fn is_valid_policy_state_transition(current: PolicyStatus, next: PolicyStatus) -> bool {
-    match (&current, &next) {
-        // Valid forward transitions
-        (PolicyStatus::Active, PolicyStatus::Expired) => true,
-        (PolicyStatus::Active, PolicyStatus::Cancelled) => true,
-        (PolicyStatus::Active, PolicyStatus::Claimed) => true,
-        (PolicyStatus::Expired, PolicyStatus::Claimed) => true,
-        // Invalid transitions
-        _ => false,
-    }
-}
-
-// Bring the shared PolicyStatus into scope for the legacy invariant helper above.
-use insurance_contracts::types::PolicyStatus;
-
 /// I4: Validate coverage amount within bounds
 fn validate_coverage_amount(amount: i128) -> Result<(), ContractError> {
     if amount < MIN_COVERAGE_AMOUNT || amount > MAX_COVERAGE_AMOUNT {
@@ -526,6 +496,7 @@ impl PolicyContract {
         coverage_amount: i128,
         premium_amount: i128,
         duration_days: u32,
+        auto_renew: bool,
     ) -> Result<u64, ContractError> {
         // Verify identity and require policy management permission
         manager.require_auth();
@@ -572,6 +543,7 @@ impl PolicyContract {
             current_time,
             end_time,
             current_time,
+            auto_renew,
         );
 
         env.storage().persistent().set(&DataKey::Policy(policy_id), &policy);
@@ -593,6 +565,90 @@ impl PolicyContract {
         );
 
         Ok(policy_id)
+    }
+
+    pub fn renew_policy(
+        env: Env,
+        actor: Address,
+        policy_id: u64,
+        duration_days: u32,
+    ) -> Result<(), ContractError> {
+        actor.require_auth();
+
+        let mut policy = Self::get_policy(env.clone(), policy_id)?;
+
+        // Authorization logic
+        let is_holder = actor == policy.holder;
+        let is_privileged = has_role(&env, &actor, Role::Admin)
+            || has_role(&env, &actor, Role::PolicyManager);
+
+        if !is_holder && !is_privileged {
+            return Err(ContractError::Unauthorized);
+        }
+
+        // If privileged (automation), require auto_renew to be true
+        if is_privileged && !is_holder && !policy.auto_renew {
+            return Err(ContractError::Unauthorized);
+        }
+
+        // Validate state (must be ACTIVE)
+        if !policy.is_active() {
+            return Err(ContractError::InvalidState);
+        }
+
+        // Validate duration
+        validate_duration(duration_days)?;
+
+        // Calculate new end time
+        // Extend from the current end_time to avoid gaps
+        let new_end_time = policy
+            .end_time
+            .checked_add(
+                u64::from(duration_days)
+                    .checked_mul(86400)
+                    .ok_or(ContractError::Overflow2)?,
+            )
+            .ok_or(ContractError::Overflow2)?;
+
+        policy.end_time = new_end_time;
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Policy(policy_id), &policy);
+
+        env.events().publish(
+            (Symbol::new(&env, "PolicyRenewed"), policy_id),
+            (actor, new_end_time, duration_days),
+        );
+
+        Ok(())
+    }
+
+    pub fn set_auto_renew(
+        env: Env,
+        holder: Address,
+        policy_id: u64,
+        auto_renew: bool,
+    ) -> Result<(), ContractError> {
+        holder.require_auth();
+
+        let mut policy = Self::get_policy(env.clone(), policy_id)?;
+
+        if policy.holder != holder {
+            return Err(ContractError::Unauthorized);
+        }
+
+        policy.auto_renew = auto_renew;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Policy(policy_id), &policy);
+
+        env.events().publish(
+            (Symbol::new(&env, "AutoRenewUpdated"), policy_id),
+            (holder, auto_renew),
+        );
+
+        Ok(())
     }
 
     pub fn get_policy(env: Env, policy_id: u64) -> Result<Policy, ContractError> {
@@ -759,6 +815,7 @@ impl PolicyContract {
                     end_time: policy.end_time,
                     state: policy.state(),
                     created_at: policy.created_at,
+                    auto_renew: policy.auto_renew,
                 };
                 policies.push_back(view);
             }
@@ -961,6 +1018,7 @@ mod tests {
                 coverage,
                 premium,
                 duration,
+                false,
             )
             .unwrap();
 
@@ -993,6 +1051,7 @@ mod tests {
                 MIN_COVERAGE_AMOUNT - 1,
                 MIN_PREMIUM_AMOUNT + 100,
                 30,
+                false,
             );
 
             assert_eq!(result, Err(ContractError::InvalidAmount));
@@ -1019,6 +1078,7 @@ mod tests {
                 MAX_COVERAGE_AMOUNT + 1,
                 MIN_PREMIUM_AMOUNT + 100,
                 30,
+                false,
             );
 
             assert_eq!(result, Err(ContractError::InvalidAmount));
@@ -1045,6 +1105,7 @@ mod tests {
                 MIN_COVERAGE_AMOUNT + 1000,
                 MIN_PREMIUM_AMOUNT - 1,
                 30,
+                false,
             );
 
             assert_eq!(result, Err(ContractError::InvalidPremium));
@@ -1071,6 +1132,7 @@ mod tests {
                 MIN_COVERAGE_AMOUNT + 1000,
                 MAX_PREMIUM_AMOUNT + 1,
                 30,
+                false,
             );
 
             assert_eq!(result, Err(ContractError::InvalidPremium));
@@ -1097,6 +1159,7 @@ mod tests {
                 MIN_COVERAGE_AMOUNT + 1000,
                 MIN_PREMIUM_AMOUNT + 100,
                 MIN_POLICY_DURATION_DAYS - 1,
+                false,
             );
 
             assert_eq!(result, Err(ContractError::InvalidInput));
@@ -1123,6 +1186,7 @@ mod tests {
                 MIN_COVERAGE_AMOUNT + 1000,
                 MIN_PREMIUM_AMOUNT + 100,
                 MAX_POLICY_DURATION_DAYS + 1,
+                false,
             );
 
             assert_eq!(result, Err(ContractError::InvalidInput));
@@ -1155,6 +1219,7 @@ mod tests {
                 coverage,
                 premium,
                 duration,
+                false,
             )
             .unwrap();
 
@@ -1165,6 +1230,7 @@ mod tests {
                 coverage,
                 premium,
                 duration,
+                false,
             )
             .unwrap();
 
@@ -1198,6 +1264,7 @@ mod tests {
                 coverage,
                 premium,
                 duration,
+                false,
             )
             .unwrap();
 
@@ -1240,6 +1307,7 @@ mod tests {
                 coverage,
                 premium,
                 duration,
+                false,
             )
             .unwrap();
 
@@ -1282,6 +1350,7 @@ mod tests {
                 coverage,
                 premium,
                 duration,
+                false,
             )
             .unwrap();
 
@@ -1291,6 +1360,55 @@ mod tests {
             // Try to cancel again - should fail due to state
             let result = PolicyContract::cancel_policy(env.clone(), admin.clone(), policy_id);
             assert_eq!(result, Err(ContractError::InvalidStateTransition));
+        });
+    }
+
+    #[test]
+    fn test_policy_renewal() {
+        let env = Env::default();
+        with_contract_env(&env, || {
+            let admin = Address::generate(&env);
+            let manager = Address::generate(&env);
+            let holder = Address::generate(&env);
+            let risk_pool = Address::generate(&env);
+
+            PolicyContract::initialize(env.clone(), admin.clone(), risk_pool.clone()).unwrap();
+            PolicyContract::grant_manager_role(env.clone(), admin.clone(), manager.clone())
+                .unwrap();
+
+            let coverage = MIN_COVERAGE_AMOUNT + 1000;
+            let premium = MIN_PREMIUM_AMOUNT + 100;
+            let duration = 30;
+
+            let policy_id = PolicyContract::issue_policy(
+                env.clone(),
+                manager.clone(),
+                holder.clone(),
+                coverage,
+                premium,
+                duration,
+                true, // Auto renew enabled
+            )
+            .unwrap();
+
+            // Renew by holder
+            PolicyContract::renew_policy(env.clone(), holder.clone(), policy_id, 30).unwrap();
+
+            let policy = PolicyContract::get_policy(env.clone(), policy_id).unwrap();
+            // Duration was 30 days, renewed for 30 days. Total duration from start should be 60 days.
+            assert_eq!(policy.end_time, policy.start_time + 60 * 86400);
+
+            // Renew by manager (allowed because auto_renew is true)
+            PolicyContract::renew_policy(env.clone(), manager.clone(), policy_id, 30).unwrap();
+            let policy = PolicyContract::get_policy(env.clone(), policy_id).unwrap();
+            assert_eq!(policy.end_time, policy.start_time + 90 * 86400);
+
+            // Disable auto renew
+            PolicyContract::set_auto_renew(env.clone(), holder.clone(), policy_id, false).unwrap();
+
+            // Renew by manager (should fail)
+            let res = PolicyContract::renew_policy(env.clone(), manager.clone(), policy_id, 30);
+            assert_eq!(res, Err(ContractError::Unauthorized));
         });
     }
 }
