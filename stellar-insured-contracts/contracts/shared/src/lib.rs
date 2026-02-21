@@ -35,6 +35,7 @@ pub mod constants;
 pub mod validation;
 pub mod versioning;
 pub mod upgradeable;
+pub mod gas_optimization;
 
 // Re-export commonly used types
 pub use errors::ContractError;
@@ -124,6 +125,16 @@ pub use validation::{
     validate_policy_params,
     validate_claim_params,
     validate_risk_pool_init_params,
+};
+
+pub use gas_optimization::{
+    GasOptimizer,
+    OptimizedStructures,
+    PerformanceMonitor,
+    GasMeasurement,
+    GasMetrics,
+    StorageOptimization,
+    OptimizedDataKey,
 };
 
 pub use versioning::{
