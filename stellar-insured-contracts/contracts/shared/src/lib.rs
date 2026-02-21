@@ -47,6 +47,9 @@ pub use types::{
     CrossChainMessageStatus, CrossChainMessageType, BridgeStatus,
     // Governance staking types
     RewardConfig, StakeInfo, StakingPosition, StakingStats, VoteDelegation,
+    // Privacy/ZKP types
+    ZkProof, PrivacySettings, ConfidentialClaim, PrivatePolicyData,
+    ZkVerificationResult, PrivacyProof, ComplianceRecord,
 };
 
 // Re-export all validation helpers (grouped by domain)

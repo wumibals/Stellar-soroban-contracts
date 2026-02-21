@@ -772,6 +772,10 @@ pub enum DataKey {
     GovernanceRewardConfig,
     /// Governance staking statistics
     GovernanceStakingStats,
+    /// Privacy/ZKP related data
+    PrivacyProof,
+    /// Confidential claim data
+    ConfidentialClaim,
 }
 
 // ===== Governance Staking Types =====
@@ -870,4 +874,146 @@ pub struct VoteDelegation {
     pub delegated_at: u64,
     /// Whether delegation is active
     pub is_active: bool,
+}
+
+// ===== Privacy / ZKP Types =====
+
+/// Zero-knowledge proof for private claim verification
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ZkProof {
+    /// Proof identifier (hash of proof data)
+    pub proof_id: BytesN<32>,
+    /// Circuit identifier (which verification circuit was used)
+    pub circuit_id: Symbol,
+    /// Public inputs for verification
+    pub public_inputs: Vec<i128>,
+    /// Verification key hash
+    pub vk_hash: BytesN<32>,
+    /// Proof timestamp
+    pub created_at: u64,
+    /// Proof expiration (if applicable)
+    pub expires_at: Option<u64>,
+}
+
+/// Privacy settings for a user
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PrivacySettings {
+    /// User address
+    pub user: Address,
+    /// Whether privacy mode is enabled
+    pub privacy_enabled: bool,
+    /// Preferred privacy level (1-3)
+    pub privacy_level: u32,
+    /// Encryption public key (for confidential data)
+    pub encryption_key: Option<BytesN<32>>,
+    /// Data retention period in days
+    pub retention_days: u32,
+    /// Whether data can be shared with regulators
+    pub regulatory_compliance: bool,
+    /// Last updated timestamp
+    pub updated_at: u64,
+}
+
+/// Confidential claim data (encrypted/hashed)
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ConfidentialClaim {
+    /// Claim identifier
+    pub claim_id: u64,
+    /// Policy ID (public)
+    pub policy_id: u64,
+    /// Claimant address (public)
+    pub claimant: Address,
+    /// Encrypted claim amount (only claimant and validator can decrypt)
+    pub encrypted_amount: BytesN<32>,
+    /// Commitment hash of claim details
+    pub commitment_hash: BytesN<32>,
+    /// ZK proof ID for claim validity (empty if no proof)
+    pub validity_proof_id: BytesN<32>,
+    /// Proof of coverage (without revealing policy details)
+    pub coverage_proof: BytesN<32>,
+    /// Timestamp
+    pub submitted_at: u64,
+    /// Privacy level used
+    pub privacy_level: u32,
+}
+
+/// Private policy data (encrypted)
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PrivatePolicyData {
+    /// Policy identifier
+    pub policy_id: u64,
+    /// Policy holder
+    pub holder: Address,
+    /// Encrypted coverage amount
+    pub encrypted_coverage: BytesN<32>,
+    /// Encrypted premium amount
+    pub encrypted_premium: BytesN<32>,
+    /// Policy commitment hash
+    pub policy_commitment: BytesN<32>,
+    /// ZK proof ID of valid policy (empty if no proof)
+    pub policy_proof_id: BytesN<32>,
+    /// Created timestamp
+    pub created_at: u64,
+}
+
+/// Verification result for ZKP
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ZkVerificationResult {
+    /// Proof is valid
+    Valid = 0,
+    /// Proof is invalid
+    Invalid = 1,
+    /// Proof has expired
+    Expired = 2,
+    /// Circuit not recognized
+    UnknownCircuit = 3,
+    /// Verification failed due to error
+    VerificationFailed = 4,
+}
+
+/// Privacy proof record for storage
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PrivacyProof {
+    /// Proof ID
+    pub proof_id: BytesN<32>,
+    /// Associated claim or policy ID
+    pub entity_id: u64,
+    /// Entity type (claim, policy, etc.)
+    pub entity_type: Symbol,
+    /// ZK proof data
+    pub zk_proof: ZkProof,
+    /// Verification result
+    pub verification_result: ZkVerificationResult,
+    /// Verified at timestamp
+    pub verified_at: Option<u64>,
+    /// Verifier address
+    pub verifier: Option<Address>,
+}
+
+/// Regulatory compliance record (for audits)
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ComplianceRecord {
+    /// Record ID
+    pub record_id: u64,
+    /// Entity type (claim, policy)
+    pub entity_type: Symbol,
+    /// Entity ID
+    pub entity_id: u64,
+    /// Compliance check type
+    pub check_type: Symbol,
+    /// Whether compliant
+    pub is_compliant: bool,
+    /// Encrypted compliance data (for regulators)
+    pub encrypted_data: Option<BytesN<32>>,
+    /// Timestamp
+    pub checked_at: u64,
+    /// Auditor address (if applicable)
+    pub auditor: Option<Address>,
 }

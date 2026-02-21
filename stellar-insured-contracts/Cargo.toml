@@ -18,6 +18,7 @@ members = [
     "contracts/risk-monitoring",
     "contracts/asset_registry",
     "contracts/governance_staking",
+    "contracts/privacy",
 ]
 
 [workspace.dependencies]
