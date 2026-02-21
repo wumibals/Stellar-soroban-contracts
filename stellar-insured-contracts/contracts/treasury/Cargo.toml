@@ -8,6 +8,7 @@ soroban-sdk = { workspace = true }
 authorization = { path = "../authorization" }
 insurance-invariants = { path = "../invariants" }
 insurance-contracts = { path = "../" }
+shared = { path = "../shared" }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }

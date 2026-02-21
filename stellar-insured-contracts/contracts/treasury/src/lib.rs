@@ -416,6 +416,24 @@ impl TreasuryContract {
         amount: i128,
         fee_type: u32,
     ) -> Result<(), ContractError> {
+        // Default to Native asset for backward compatibility
+        Self::deposit_fee_multi_asset(
+            env,
+            from,
+            amount,
+            fee_type,
+            shared::types::Asset::Native,
+        )
+    }
+
+    /// Multi-asset fee deposit function
+    pub fn deposit_fee_multi_asset(
+        env: Env,
+        from: Address,
+        amount: i128,
+        fee_type: u32,
+        asset: shared::types::Asset,
+    ) -> Result<(), ContractError> {
         if is_paused(&env) {
             return Err(ContractError::Paused);
         }
@@ -428,22 +446,52 @@ impl TreasuryContract {
             return Err(ContractError::NotTrustedContract);
         }
 
-        let current_balance = get_balance(&env);
+        // Get current balance for this asset
+        let asset_balance_key = (Symbol::new(&env, "ASSET_BALANCE"), asset.clone());
+        let current_balance: i128 = env.storage().persistent().get(&asset_balance_key).unwrap_or(0i128);
         let new_balance = current_balance.checked_add(amount).ok_or(ContractError::Overflow)?;
-        set_balance(&env, new_balance)?;
+        env.storage().persistent().set(&asset_balance_key, &new_balance);
 
-        // Update total fees collected
+        // Update total fees collected (in base currency)
         let total_fees: i128 =
             env.storage().persistent().get(&TOTAL_FEES_COLLECTED).unwrap_or(0i128);
         let new_total = total_fees.checked_add(amount).ok_or(ContractError::Overflow)?;
         env.storage().persistent().set(&TOTAL_FEES_COLLECTED, &new_total);
 
+        // Track asset-specific fee deposits
+        let asset_fees_key = (Symbol::new(&env, "ASSET_FEES"), asset.clone());
+        let asset_fees: i128 = env.storage().persistent().get(&asset_fees_key).unwrap_or(0i128);
+        let new_asset_fees = asset_fees.checked_add(amount).ok_or(ContractError::Overflow)?;
+        env.storage().persistent().set(&asset_fees_key, &new_asset_fees);
+
         env.events().publish(
             (Symbol::new(&env, "fee_deposited"), from.clone()),
-            (amount, fee_type, new_balance, new_total),
+            (amount, fee_type, asset, new_balance, new_total),
         );
 
         Ok(())
+    }
+
+    /// Get balance for a specific asset
+    pub fn get_asset_balance(
+        env: Env,
+        asset: shared::types::Asset,
+    ) -> i128 {
+        env.storage()
+            .persistent()
+            .get(&(Symbol::new(&env, "ASSET_BALANCE"), asset))
+            .unwrap_or(0i128)
+    }
+
+    /// Get total fees collected for a specific asset
+    pub fn get_asset_fees(
+        env: Env,
+        asset: shared::types::Asset,
+    ) -> i128 {
+        env.storage()
+            .persistent()
+            .get(&(Symbol::new(&env, "ASSET_FEES"), asset))
+            .unwrap_or(0i128)
     }
 
     /// Create a withdrawal proposal (DAO governance required)

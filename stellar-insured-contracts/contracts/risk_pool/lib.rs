@@ -372,6 +372,24 @@ impl RiskPoolContract {
         claim_id: u64,
         recipient: Address,
     ) -> Result<(), ContractError> {
+        // Default to Native asset for backward compatibility
+        Self::payout_reserved_claim_multi_asset(
+            env,
+            caller_contract,
+            claim_id,
+            recipient,
+            shared::types::Asset::Native,
+        )
+    }
+
+    /// Multi-asset version of payout_reserved_claim
+    pub fn payout_reserved_claim_multi_asset(
+        env: Env,
+        caller_contract: Address,
+        claim_id: u64,
+        recipient: Address,
+        payout_asset: shared::types::Asset,
+    ) -> Result<(), ContractError> {
         // Verify that the caller is a trusted contract (e.g., claims contract)
         caller_contract.require_auth();
         require_trusted_contract(&env, &caller_contract)?;
@@ -415,13 +433,32 @@ impl RiskPoolContract {
         env.storage().persistent().remove(&(CLAIM_RESERVATION, claim_id));
         env.storage().persistent().set(&POOL_STATS, &stats);
 
+        // Store payout asset information for tracking
+        env.storage().persistent().set(
+            &(Symbol::new(&env, "PAYOUT_ASSET"), claim_id),
+            &payout_asset,
+        );
+
         // I1: Assert liquidity invariant holds after payout
         check_liquidity_invariant(&env)?;
 
-        env.events()
-            .publish((Symbol::new(&env, "reserved_claim_payout"), claim_id), (recipient, amount));
+        env.events().publish(
+            (Symbol::new(&env, "reserved_claim_payout"), claim_id),
+            (recipient, amount, payout_asset),
+        );
 
         Ok(())
+    }
+
+    /// Get the payout asset for a claim
+    pub fn get_claim_payout_asset(
+        env: Env,
+        claim_id: u64,
+    ) -> Result<shared::types::Asset, ContractError> {
+        env.storage()
+            .persistent()
+            .get(&(Symbol::new(&env, "PAYOUT_ASSET"), claim_id))
+            .ok_or(ContractError::NotFound)
     }
 
 pub fn payout_claim(

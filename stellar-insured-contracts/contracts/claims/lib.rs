@@ -384,11 +384,13 @@ impl ClaimsContract {
 
     /// Submit a new claim for a policy.
     /// Uses sequential claim IDs for predictable indexing.
+    /// Supports multi-asset claims with optional payout preference.
     pub fn submit_claim(
         env: Env,
         claimant: Address,
         policy_id: u64,
         amount: i128,
+        payout_preference: Option<shared::types::ClaimPayoutPreference>,
     ) -> Result<u64, ContractError> {
         // 1. IDENTITY CHECK
         claimant.require_auth();
@@ -443,10 +445,21 @@ impl ClaimsContract {
         // I3: Initial state must be Submitted
         let initial_status = ClaimStatus::Submitted;
 
-        // Store the claim
+        // Store the claim with payout preference
+        let payout_pref = payout_preference.unwrap_or(shared::types::ClaimPayoutPreference {
+            preferred_asset: shared::types::Asset::Native,
+            accept_alternative: true,
+            alternatives: Vec::new(&env),
+        });
+
         env.storage()
             .persistent()
             .set(&(CLAIM, claim_id), &(policy_id, claimant.clone(), amount, initial_status, current_time));
+
+        // Store payout preference separately
+        env.storage()
+            .persistent()
+            .set(&(symbol_short!("PAYOUT"), claim_id), &payout_pref);
 
         // Map policy to claim for duplicate prevention
         env.storage()
@@ -623,7 +636,12 @@ impl ClaimsContract {
         Ok(())
     }
 
-    pub fn settle_claim(env: Env, processor: Address, claim_id: u64) -> Result<(), ContractError> {
+    pub fn settle_claim(
+        env: Env,
+        processor: Address,
+        claim_id: u64,
+        payout_asset: Option<shared::types::Asset>,
+    ) -> Result<(), ContractError> {
         // Verify identity and require claim processing permission
         processor.require_auth();
         require_claim_processing(&env, &processor)?;
@@ -644,6 +662,20 @@ impl ClaimsContract {
             return Err(ContractError::InvalidAmount);
         }
 
+        // Get payout preference
+        let payout_pref: shared::types::ClaimPayoutPreference = env
+            .storage()
+            .persistent()
+            .get(&(symbol_short!("PAYOUT"), claim_id))
+            .unwrap_or(shared::types::ClaimPayoutPreference {
+                preferred_asset: shared::types::Asset::Native,
+                accept_alternative: true,
+                alternatives: Vec::new(&env),
+            });
+
+        // Determine payout asset (use provided or preferred)
+        let final_payout_asset = payout_asset.unwrap_or(payout_pref.preferred_asset.clone());
+
         // Get risk pool contract address from config
         let config: (Address, Address) =
             env.storage().persistent().get(&CONFIG).ok_or(ContractError::NotInitialized)?;
@@ -652,11 +684,11 @@ impl ClaimsContract {
         // Verify risk pool is a trusted contract before invoking
         require_trusted_contract(&env, &risk_pool_contract)?;
 
-        // Call risk pool to payout the claim amount
+        // Call risk pool to payout the claim amount with asset preference
         env.invoke_contract::<()>(
             &risk_pool_contract,
-            &Symbol::new(&env, "payout_reserved_claim"),
-            (claim_id, claim.1.clone()).into_val(&env),
+            &Symbol::new(&env, "payout_reserved_claim_multi_asset"),
+            (claim_id, claim.1.clone(), final_payout_asset).into_val(&env),
         );
 
         // I3: Transition to Settled state
@@ -668,6 +700,17 @@ impl ClaimsContract {
             .publish((Symbol::new(&env, "claim_settled"), claim_id), (claim.1, claim.2));
 
         Ok(())
+    }
+
+    /// Get claim payout preference
+    pub fn get_claim_payout_preference(
+        env: Env,
+        claim_id: u64,
+    ) -> Result<shared::types::ClaimPayoutPreference, ContractError> {
+        env.storage()
+            .persistent()
+            .get(&(symbol_short!("PAYOUT"), claim_id))
+            .ok_or(ContractError::NotFound)
     }
 
     pub fn pause(env: Env, admin: Address) -> Result<(), ContractError> {

@@ -5,6 +5,116 @@
 
 use soroban_sdk::{contracttype, Address, BytesN, Symbol, Vec};
 
+// ===== Asset Types =====
+
+/// Represents an asset type in the insurance protocol
+/// Supports both native XLM and custom Stellar assets
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Asset {
+    /// Native XLM asset
+    Native,
+    /// Stellar asset with issuer (asset_code, issuer_address)
+    Stellar((Symbol, Address)),
+    /// Contract-based token (token contract address)
+    Contract(Address),
+}
+
+impl Asset {
+    /// Returns a unique identifier for the asset for storage purposes
+    pub fn to_key(&self) -> Symbol {
+        match self {
+            Asset::Native => Symbol::new(&soroban_sdk::Env::default(), "XLM"),
+            Asset::Stellar((code, _)) => code.clone(),
+            Asset::Contract(_addr) => {
+                // Use first 4 bytes of address as identifier
+                Symbol::new(&soroban_sdk::Env::default(), "CONTR")
+            }
+        }
+    }
+}
+
+/// Asset metadata for registered assets
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AssetMetadata {
+    /// The asset identifier
+    pub asset: Asset,
+    /// Asset symbol (e.g., "USDC", "XLM")
+    pub symbol: Symbol,
+    /// Asset name
+    pub name: Symbol,
+    /// Number of decimal places
+    pub decimals: u32,
+    /// Whether the asset is active for use
+    pub is_active: bool,
+    /// Whether the asset is accepted for premiums
+    pub accept_for_premium: bool,
+    /// Whether the asset is accepted for claims
+    pub accept_for_claims: bool,
+    /// Minimum amount allowed for transactions
+    pub min_amount: i128,
+    /// Maximum amount allowed for transactions
+    pub max_amount: i128,
+    /// Timestamp when asset was registered
+    pub registered_at: u64,
+}
+
+/// Multi-asset balance structure for tracking balances across assets
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MultiAssetBalance {
+    /// The asset type
+    pub asset: Asset,
+    /// Balance amount
+    pub amount: i128,
+    /// Last updated timestamp
+    pub updated_at: u64,
+}
+
+/// Asset conversion rate information
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AssetConversionRate {
+    /// Source asset
+    pub from_asset: Asset,
+    /// Target asset
+    pub to_asset: Asset,
+    /// Conversion rate in basis points (e.g., 10000 = 1:1)
+    /// Rate represents (to_amount * 10000) / from_amount
+    pub rate_bps: u32,
+    /// Timestamp when rate was last updated
+    pub updated_at: u64,
+    /// Oracle source address
+    pub oracle_source: Address,
+}
+
+/// Policy asset configuration
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PolicyAssetConfig {
+    /// Asset used for coverage amount
+    pub coverage_asset: Asset,
+    /// Asset used for premium payments
+    pub premium_asset: Asset,
+    /// Whether multi-asset claims are allowed
+    pub allow_multi_asset_claims: bool,
+    /// List of assets accepted for claim payouts (if multi-asset enabled)
+    pub accepted_claim_assets: Vec<Asset>,
+}
+
+/// Claim payout asset preference
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ClaimPayoutPreference {
+    /// Preferred asset for payout
+    pub preferred_asset: Asset,
+    /// Whether to accept equivalent value in other assets
+    pub accept_alternative: bool,
+    /// Alternative assets accepted (in order of preference)
+    pub alternatives: Vec<Asset>,
+}
+
 // ===== Status Enums =====
 
 /// Represents the lifecycle status of a policy
@@ -644,4 +754,16 @@ pub enum DataKey {
     CrossChainProposal,
     /// Cross-chain counter
     CrossChainCounter,
+    /// Asset registry storage
+    AssetRegistry,
+    /// Asset metadata by asset
+    AssetMetadata,
+    /// Asset conversion rate
+    AssetConversionRate,
+    /// Multi-asset balance
+    MultiAssetBalance,
+    /// Policy asset configuration
+    PolicyAssetConfig,
+    /// Asset balance by (owner, asset)
+    AssetBalance,
 }

@@ -12,6 +12,7 @@ path = "lib.rs"
 soroban-sdk = { workspace = true }
 insurance-contracts = { path = "../" }
 insurance-invariants = { path = "../invariants" }
+shared = { path = "../shared" }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }

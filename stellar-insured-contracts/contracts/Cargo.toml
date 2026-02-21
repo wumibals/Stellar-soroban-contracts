@@ -11,3 +11,4 @@ path = "lib.rs"
 soroban-sdk = { workspace = true }
 authorization = { path = "authorization" }
 shared = { path = "shared" }
+asset-registry = { path = "asset_registry" }

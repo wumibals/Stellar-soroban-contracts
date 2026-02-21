@@ -16,6 +16,7 @@ members = [
     "contracts/product-template",
     "contracts/cross_chain",
     "contracts/risk-monitoring",
+    "contracts/asset_registry",
 ]
 
 [workspace.dependencies]
@@ -35,8 +36,3 @@ lto = true
 [profile.release-with-logs]
 inherits = "release"
 debug-assertions = true
-
-[dev-dependencies]
-soroban-sdk = { version = "20.0.0", features = ["testutils"] }
-proptest = "1.4"
-rand = "0.8"
