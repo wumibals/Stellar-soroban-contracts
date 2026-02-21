@@ -7,9 +7,13 @@ use insurance_contracts::authorization::{
     require_policy_management, Role,
 };
 use insurance_contracts::rate_limit::{self, RateLimitConfig};
+use insurance_contracts::gas_optimization::{GasOptimizer, PerformanceMonitor};
 
 // Import invariant checks and error types
 use insurance_invariants::{InvariantError, ProtocolInvariants};
+
+// Import optimized policy implementation
+use crate::optimized_policy::OptimizedPolicyContract;
 
 // Policy validation constants
 const MIN_COVERAGE_AMOUNT: i128 = 1_000_000; // 1 unit (assuming 6 decimals)
@@ -519,6 +523,30 @@ impl PolicyContract {
         premium_asset: Option<shared::types::Asset>,
         allow_multi_asset_claims: Option<bool>,
     ) -> Result<u64, ContractError> {
+        // Use performance monitoring for optimization tracking
+        PerformanceMonitor::track_operation(&env, "issue_policy", || {
+            Self::issue_policy_impl(
+                env.clone(),
+                manager.clone(),
+                holder.clone(),
+                coverage_amount,
+                premium_amount,
+                duration_days,
+                auto_renew,
+            )
+        })
+    }
+
+    /// Optimized implementation of policy issuance
+    fn issue_policy_impl(
+        env: Env,
+        manager: Address,
+        holder: Address,
+        coverage_amount: i128,
+        premium_amount: i128,
+        duration_days: u32,
+        auto_renew: bool,
+    ) -> Result<u64, ContractError> {
         // Verify identity and require policy management permission
         manager.require_auth();
         require_policy_management(&env, &manager)?;
@@ -548,6 +576,10 @@ impl PolicyContract {
         // Validate duration within bounds
         validate_duration(duration_days)?;
 
+        // Use optimized policy issuance for gas efficiency
+        let policy_id = OptimizedPolicyContract::issue_policy_optimized(
+            &env,
+            manager.clone(),
         // Use default assets if not specified (Native XLM)
         let cov_asset = coverage_asset.unwrap_or(shared::types::Asset::Native);
         let prem_asset = premium_asset.unwrap_or(shared::types::Asset::Native);
@@ -566,10 +598,9 @@ impl PolicyContract {
             holder.clone(),
             coverage_amount,
             premium_amount,
-            current_time,
-            end_time,
-            current_time,
+            duration_days,
             auto_renew,
+        )?;
             cov_asset,
             prem_asset,
             multi_asset,
@@ -794,69 +825,68 @@ impl PolicyContract {
         start_index: u32,
         limit: u32,
     ) -> PaginatedPoliciesResult {
-        // Cap the limit to prevent excessive gas consumption
-        let effective_limit = if limit > MAX_PAGINATION_LIMIT {
-            MAX_PAGINATION_LIMIT
-        } else if limit == 0 {
-            MAX_PAGINATION_LIMIT
-        } else {
-            limit
-        };
+        // Use performance monitoring
+        PerformanceMonitor::track_operation(&env, "get_active_policies", || {
+            Self::get_active_policies_impl(env.clone(), start_index, limit)
+        }).unwrap_or_else(|_| PaginatedPoliciesResult {
+            policies: Vec::new(&env),
+            total_count: 0,
+        })
+    }
 
-        // Get the active policy list
-        let active_list: Vec<u64> = env
-            .storage()
-            .persistent()
-            .get(&ACTIVE_POLICY_LIST)
-            .unwrap_or_else(|| Vec::new(&env));
+    /// Optimized implementation of active policies query
+    fn get_active_policies_impl(
+        env: Env,
+        start_index: u32,
+        limit: u32,
+    ) -> Result<PaginatedPoliciesResult, ContractError> {
+        // Use optimized batched query
+        let (policies_vec, total_count) = OptimizedPolicyContract::get_policies_batched(
+            &env,
+            start_index,
+            limit,
+            None, // No state filter
+        );
 
-        let total_count = active_list.len();
-
-        // Handle out-of-bounds start_index
-        if start_index >= total_count {
-            return PaginatedPoliciesResult {
-                policies: Vec::new(&env),
-                total_count,
-            };
-        }
-
-        // Calculate the actual range to fetch
-        let end_index = core::cmp::min(start_index + effective_limit, total_count);
-
-        // Build the result vector with PolicyView structs
-        let mut policies: Vec<PolicyView> = Vec::new(&env);
-
-        for i in start_index..end_index {
-            let policy_id = active_list.get(i).unwrap();
-
-            // Read the policy data from storage
-            if let Some(policy) = env
-                .storage()
-                .persistent()
-                .get::<_, Policy>(&DataKey::Policy(policy_id))
-            {
-                let view = PolicyView {
-                    id: policy_id,
-                    holder: policy.holder.clone(),
-                    coverage_amount: policy.coverage_amount,
-                    premium_amount: policy.premium_amount,
-                    start_time: policy.start_time,
-                    end_time: policy.end_time,
-                    state: policy.state(),
-                    created_at: policy.created_at,
-                    auto_renew: policy.auto_renew,
-                    coverage_asset: policy.coverage_asset.clone(),
-                    premium_asset: policy.premium_asset.clone(),
-                    allow_multi_asset_claims: policy.allow_multi_asset_claims,
-                };
-                policies.push_back(view);
-            }
-        }
-
-        PaginatedPoliciesResult {
-            policies,
+        Ok(PaginatedPoliciesResult {
+            policies: policies_vec,
             total_count,
-        }
+        })
+    }
+
+    /// Get policies by specific state with optimization
+    pub fn get_policies_by_state(
+        env: Env,
+        state: PolicyState,
+        start_index: u32,
+        limit: u32,
+    ) -> PaginatedPoliciesResult {
+        PerformanceMonitor::track_operation(&env, "get_policies_by_state", || {
+            Self::get_policies_by_state_impl(env.clone(), state, start_index, limit)
+        }).unwrap_or_else(|_| PaginatedPoliciesResult {
+            policies: Vec::new(&env),
+            total_count: 0,
+        })
+    }
+
+    fn get_policies_by_state_impl(
+        env: Env,
+        state: PolicyState,
+        start_index: u32,
+        limit: u32,
+    ) -> Result<PaginatedPoliciesResult, ContractError> {
+        // Use optimized batched query with state filter
+        let (policies_vec, total_count) = OptimizedPolicyContract::get_policies_batched(
+            &env,
+            start_index,
+            limit,
+            Some(state),
+        );
+
+        Ok(PaginatedPoliciesResult {
+            policies: policies_vec,
+            total_count,
+        })
     }
 
     /// Returns the count of currently active policies.

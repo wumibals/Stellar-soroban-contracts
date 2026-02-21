@@ -11,6 +11,12 @@ use insurance_contracts::authorization::{
 // Import invariant checks and error types
 use insurance_invariants::{InvariantError, ProtocolInvariants};
 
+// Import gas optimization utilities
+use insurance_contracts::gas_optimization::{GasOptimizer, PerformanceMonitor};
+
+// Import optimized risk pool implementation
+use crate::optimized_risk_pool::OptimizedRiskPool;
+
 #[contract]
 pub struct RiskPoolContract;
 
@@ -179,6 +185,17 @@ impl RiskPoolContract {
         provider: Address,
         amount: i128,
     ) -> Result<(), ContractError> {
+        // Use performance monitoring
+        PerformanceMonitor::track_operation(&env, "deposit_liquidity", || {
+            Self::deposit_liquidity_impl(env.clone(), provider.clone(), amount)
+        })
+    }
+
+    fn deposit_liquidity_impl(
+        env: Env,
+        provider: Address,
+        amount: i128,
+    ) -> Result<(), ContractError> {
         if is_paused(&env) {
             return Err(ContractError::Paused);
         }
@@ -191,41 +208,31 @@ impl RiskPoolContract {
         let config: (Address, i128) =
             env.storage().persistent().get(&CONFIG).ok_or(ContractError::NotInitialized)?;
 
-        let mut provider_info: (i128, i128, u64) = env
-            .storage()
-            .persistent()
-            .get(&(PROVIDER, provider.clone()))
-            .unwrap_or((0i128, 0i128, env.ledger().timestamp()));
+        // Use optimized provider info access
+        let provider_info = OptimizedRiskPool::get_provider_info_optimized(&env, &provider)?;
+        let current_stake = OptimizedRiskPool::from_compact_amount(provider_info.total_deposited);
 
         // After the amount is added, the provider's cumulative stake must meet min_provider_stake
-        // Give a clear error rather than generic InvalidInput
-        if provider_info.1.checked_add(amount).unwrap_or(i128::MAX) < config.1 {
-            return Err(ContractError::InvalidInput); // DepositBelowMinStake
+        if current_stake.checked_add(amount).unwrap_or(i128::MAX) < config.1 {
+            return Err(ContractError::InvalidInput);
         }
+
         // Sanity cap: a single deposit cannot exceed 10 billion XLM in stroops
         const MAX_DEPOSIT: i128 = 100_000_000_000_000_000;
         if amount > MAX_DEPOSIT {
             return Err(ContractError::InvalidInput);
         }
 
-        let mut stats: (i128, i128, i128, u64) =
-            env.storage().persistent().get(&POOL_STATS).ok_or(ContractError::NotFound)?;
-
-        // Safe arithmetic with overflow check
-        provider_info.0 = provider_info.0.checked_add(amount).ok_or(ContractError::Overflow)?;
-        provider_info.1 = provider_info.1.checked_add(amount).ok_or(ContractError::Overflow)?;
-        stats.0 = stats.0.checked_add(amount).ok_or(ContractError::Overflow)?;
-        stats.2 = stats.2.checked_add(amount).ok_or(ContractError::Overflow)?;
-
-        env.storage().persistent().set(&(PROVIDER, provider.clone()), &provider_info);
-        env.storage().persistent().set(&POOL_STATS, &stats);
+        // Use optimized update operations
+        OptimizedRiskPool::update_provider_info_optimized(&env, &provider, amount, amount)?;
+        OptimizedRiskPool::update_pool_stats_optimized(&env, amount, 0, amount, 0)?;
 
         // I1: Assert liquidity invariant holds after deposit
         check_liquidity_invariant(&env)?;
 
         env.events().publish(
             (Symbol::new(&env, "liquidity_deposited"), provider.clone()),
-            (amount, provider_info.1),
+            (amount, current_stake + amount),
         );
 
         Ok(())
@@ -243,77 +250,15 @@ impl RiskPoolContract {
         Ok(stats)
     }
 
-    pub fn get_provider_info(
-        env: Env,
-        provider: Address,
-    ) -> Result<(i128, i128, u64), ContractError> {
-    /// Returns a structured view of the risk pool statistics with derived metrics.
-    /// This is a read-only function optimized for frontend/indexer consumption.
-    ///
-    /// # Returns
-    /// - `RiskPoolStatsView` containing raw stats and calculated metrics
-    ///
-    /// # Derived Metrics
-    /// - `available_liquidity`: total_liquidity - reserved_for_claims
-    /// - `utilization_rate_bps`: (reserved / total) * 10000 basis points
-    pub fn get_risk_pool_stats_view(env: Env) -> Result<RiskPoolStatsView, ContractError> {
-        // Read raw pool stats: (total_liquidity, total_claims_paid, total_deposits, provider_count)
-        let stats: (i128, i128, i128, u64) = env
-            .storage()
-            .persistent()
-            .get(&POOL_STATS)
-            .ok_or(ContractError::NotFound)?;
-
-        // Read reserved amount for pending claims
-        let reserved_for_claims: i128 = env
-            .storage()
-            .persistent()
-            .get(&RESERVED_TOTAL)
-            .unwrap_or(0i128);
-
-        // Calculate derived metrics
-        let total_liquidity = stats.0;
-        let available_liquidity = total_liquidity
-            .checked_sub(reserved_for_claims)
-            .unwrap_or(0i128);
-
-        // Calculate utilization rate in basis points (0-10000)
-        // utilization = (reserved / total) * 10000
-        let utilization_rate_bps: u32 = if total_liquidity > 0 {
-            let rate = reserved_for_claims
-                .checked_mul(10000)
-                .and_then(|v| v.checked_div(total_liquidity))
-                .unwrap_or(0);
-            // Clamp to u32 max (should never exceed 10000 in normal operation)
-            if rate > u32::MAX as i128 {
-                u32::MAX
-            } else {
-                rate as u32
-            }
-        } else {
-            0u32
-        };
-
-        Ok(RiskPoolStatsView {
-            total_liquidity,
-            total_claims_paid: stats.1,
-            total_deposits: stats.2,
-            provider_count: stats.3,
-            reserved_for_claims,
-            available_liquidity,
-            utilization_rate_bps,
-        })
-    }
-
     pub fn get_provider_info(env: Env, provider: Address) -> Result<(i128, i128, u64), ContractError> {
         validate_address(&env, &provider)?;
-
+    
         let provider_info: (i128, i128, u64) = env
             .storage()
             .persistent()
             .get(&(PROVIDER, provider))
             .ok_or(ContractError::NotFound)?;
-
+    
         Ok(provider_info)
     }
 
