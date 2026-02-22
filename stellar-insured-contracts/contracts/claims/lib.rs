@@ -487,7 +487,11 @@ impl ClaimsContract {
         env.events()
             .publish((symbol_short!("clm_sub"), claim_id), (policy_id, amount, claimant.clone()));
 
-        Ok(claim_id)
+
+        env.events().publish((Symbol::new(&env, "ClaimSubmitted"), claim_id), (claimant, policy_id, amount, current_time));
+
+
+    Ok(claim_id)
     }
 
     pub fn get_claim(
@@ -589,7 +593,11 @@ impl ClaimsContract {
 
         env.events().publish((symbol_short!("clm_app"), claim_id), (claim.1, claim.2));
 
-        Ok(())
+
+        env.events().publish((Symbol::new(&env, "ClaimApproved"), claim_id), (processor, claim.1, claim.2, env.ledger().timestamp()));
+
+
+    Ok(())
     }
 
     pub fn start_review(env: Env, processor: Address, claim_id: u64) -> Result<(), ContractError> {
@@ -619,7 +627,11 @@ impl ClaimsContract {
         env.events()
             .publish((Symbol::new(&env, "claim_under_review"), claim_id), (claim.1, claim.2));
 
-        Ok(())
+
+        env.events().publish((Symbol::new(&env, "ClaimReviewStarted"), claim_id), (processor, claim.1, claim.2, env.ledger().timestamp()));
+
+
+    Ok(())
     }
 
     pub fn reject_claim(env: Env, processor: Address, claim_id: u64) -> Result<(), ContractError> {
@@ -649,7 +661,11 @@ impl ClaimsContract {
         env.events()
             .publish((Symbol::new(&env, "claim_rejected"), claim_id), (claim.1, claim.2));
 
-        Ok(())
+
+        env.events().publish((Symbol::new(&env, "ClaimRejected"), claim_id), (processor, claim.1, claim.2, env.ledger().timestamp()));
+
+
+    Ok(())
     }
 
     pub fn settle_claim(
@@ -718,7 +734,11 @@ impl ClaimsContract {
         env.events()
             .publish((Symbol::new(&env, "claim_settled"), claim_id), (claim.1, claim.2));
 
-        Ok(())
+
+        env.events().publish((Symbol::new(&env, "ClaimSettled"), claim_id), (processor, claim.1, claim.2, env.ledger().timestamp()));
+
+
+    Ok(())
     }
 
     /// Get claim payout preference
