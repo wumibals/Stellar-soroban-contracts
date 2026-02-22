@@ -1025,8 +1025,115 @@ impl PolicyContract {
 
         env.events()
             .publish((Symbol::new(&env, "delegated_role_revoked"), target.clone()), admin);
+
+
+        Ok(())
+    }
+
+    // ========================================================================
+    // Disaster Recovery & Backup
+    // ========================================================================
+
+    /// Updates the risk pool address in case of emergency or migration.
+    /// This ensures the policy contract points to a valid risk pool.
+    pub fn update_risk_pool(
+        env: Env,
+        admin: Address,
+        new_risk_pool: Address,
+    ) -> Result<(), ContractError> {
+        admin.require_auth();
+        require_admin(&env, &admin)?;
+        validate_address(&env, &new_risk_pool)?;
+
+        let mut config = Self::get_config(env.clone())?;
+        let old_risk_pool = config.risk_pool;
+        
+        if old_risk_pool == new_risk_pool {
+            return Err(ContractError::InvalidInput);
+        }
+
+        config.risk_pool = new_risk_pool.clone();
+        env.storage().persistent().set(&DataKey::Config, &config);
+
+        // Ensure the new risk pool is trusted
+        register_trusted_contract(&env, &admin, &new_risk_pool)?;
+
+        env.events().publish(
+            (Symbol::new(&env, "RiskPoolUpdated"), ()),
+            (admin, old_risk_pool, new_risk_pool, env.ledger().timestamp()),
         );
 
+        Ok(())
+    }
+
+    /// Synchronizes the active policy list with the actual state of a policy.
+    /// This is a recovery function to fix data integrity issues if the list gets out of sync.
+    pub fn sync_policy_state(
+        env: Env,
+        admin: Address,
+        policy_id: u64,
+    ) -> Result<(), ContractError> {
+        admin.require_auth();
+        require_admin(&env, &admin)?;
+
+        // Verify policy exists
+        let policy = Self::get_policy(env.clone(), policy_id)?;
+        let is_active = policy.is_active();
+
+        let mut active_list: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&ACTIVE_POLICY_LIST)
+            .unwrap_or_else(|| Vec::new(&env));
+
+        let mut found_index = None;
+        for i in 0..active_list.len() {
+            if active_list.get(i).unwrap() == policy_id {
+                found_index = Some(i);
+                break;
+            }
+        }
+
+        if is_active && found_index.is_none() {
+            // Policy is active but missing from list -> Add it
+            active_list.push_back(policy_id);
+            env.storage().persistent().set(&ACTIVE_POLICY_LIST, &active_list);
+            
+            env.events().publish(
+                (Symbol::new(&env, "PolicyStateSynced"), policy_id),
+                (Symbol::new(&env, "AddedToActiveList"), env.ledger().timestamp()),
+            );
+        } else if !is_active && found_index.is_some() {
+            // Policy is not active but present in list -> Remove it
+            let index = found_index.unwrap();
+            active_list.remove(index);
+            env.storage().persistent().set(&ACTIVE_POLICY_LIST, &active_list);
+
+            env.events().publish(
+                (Symbol::new(&env, "PolicyStateSynced"), policy_id),
+                (Symbol::new(&env, "RemovedFromActiveList"), env.ledger().timestamp()),
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Emits a snapshot of the policy state to the event log.
+    /// This facilitates off-chain backup and verification.
+    pub fn snapshot_policy(
+        env: Env,
+        admin: Address,
+        policy_id: u64,
+    ) -> Result<(), ContractError> {
+        admin.require_auth();
+        require_admin(&env, &admin)?;
+
+        let policy = Self::get_policy(env.clone(), policy_id)?;
+
+        env.events().publish(
+            (Symbol::new(&env, "PolicySnapshot"), policy_id),
+            (policy, env.ledger().timestamp()),
+        );
 
         Ok(())
     }
@@ -1459,6 +1566,57 @@ mod tests {
             // Renew by manager (should fail)
             let res = PolicyContract::renew_policy(env.clone(), manager.clone(), policy_id, 30);
             assert_eq!(res, Err(ContractError::Unauthorized));
+        });
+    }
+
+    #[test]
+    fn test_disaster_recovery_functions() {
+        let env = Env::default();
+        with_contract_env(&env, || {
+            let admin = Address::generate(&env);
+            let manager = Address::generate(&env);
+            let holder = Address::generate(&env);
+            let risk_pool = Address::generate(&env);
+            let new_risk_pool = Address::generate(&env);
+
+            PolicyContract::initialize(env.clone(), admin.clone(), risk_pool.clone()).unwrap();
+            PolicyContract::grant_manager_role(env.clone(), admin.clone(), manager.clone()).unwrap();
+
+            // 1. Test Update Risk Pool
+            PolicyContract::update_risk_pool(env.clone(), admin.clone(), new_risk_pool.clone()).unwrap();
+            let config = PolicyContract::get_config(env.clone()).unwrap();
+            assert_eq!(config.risk_pool, new_risk_pool);
+
+            // 2. Test Snapshot
+            let coverage = MIN_COVERAGE_AMOUNT + 1000;
+            let premium = MIN_PREMIUM_AMOUNT + 100;
+            let duration = 30;
+            let policy_id = PolicyContract::issue_policy(
+                env.clone(),
+                manager.clone(),
+                holder.clone(),
+                coverage,
+                premium,
+                duration,
+                false,
+            ).unwrap();
+
+            PolicyContract::snapshot_policy(env.clone(), admin.clone(), policy_id).unwrap();
+
+            // 3. Test Sync Policy State (Integrity Check)
+            // Verify it's in the list
+            let active_count = PolicyContract::get_active_policy_count(env.clone());
+            assert_eq!(active_count, 1);
+
+            // Run sync (should be no-op but succeed)
+            PolicyContract::sync_policy_state(env.clone(), admin.clone(), policy_id).unwrap();
+            
+            // Expire and verify sync
+            PolicyContract::expire_policy(env.clone(), admin.clone(), policy_id).unwrap();
+            PolicyContract::sync_policy_state(env.clone(), admin.clone(), policy_id).unwrap();
+            
+            let active_count_final = PolicyContract::get_active_policy_count(env.clone());
+            assert_eq!(active_count_final, 0);
         });
     }
 }
